@@ -1,203 +1,176 @@
-use std::iter::{Fuse, Peekable};
+use std::borrow::Cow;
+
+use nom::branch::alt;
+use nom::bytes::complete::{escaped_transform, tag, take_while1};
+use nom::character::complete::multispace0;
+use nom::combinator::{cut, value};
+use nom::error::ParseError;
+use nom::sequence::{preceded, terminated};
+use nom::{IResult, Parser};
 
 use crate::token::Token;
 
-pub struct Lexer<I: Iterator<Item = char>> {
-    iter: Peekable<Fuse<I>>,
+pub struct Lexer<'a> {
+    raw: Cow<'a, str>,
     closed: bool,
+    consumed: usize,
 }
 
-
-impl<I: Iterator<Item = char>> Lexer<I> {
-    pub fn new(i: impl IntoIterator<Item = char, IntoIter = I>) -> Lexer<I> {
+impl<'a> Lexer<'a> {
+    pub fn new(r: impl Into<Cow<'a, str>>) -> Lexer<'a> {
         Lexer {
-            iter: i.into_iter().fuse().peekable(),
+            raw: r.into(),
             closed: false,
-        }
-    }
-
-    pub fn new_from_iter(i: I) -> Lexer<I> {
-        Lexer {
-            iter: i.fuse().peekable(),
-            closed: false,
-        }
-    }
-
-    fn next_matches(&mut self, mut p: impl FnMut(char) -> bool) -> bool {
-        match self.iter.peek().copied() {
-            Some(c) if p(c) => {
-                let _ = self.iter.next();
-                true
-            },
-            _ => false,
-        }
-    }
-
-    fn next_is(&mut self, c: char) -> bool {
-        self.next_matches(|ch| ch == c)
-    }
-
-    fn next_non_whitespace(&mut self) -> Option<char> {
-        loop {
-            match self.iter.next() {
-                Some(c) if c.is_whitespace() => continue,
-                Some(c) => return Some(c),
-                None => return None,
-            }
-        }
-    }
-
-    fn read_identifier(&mut self, first: char) -> String {
-        let mut full = String::with_capacity(32);
-        full.push(first);
-
-        loop {
-            match self.iter.peek().copied() {
-                Some(c) if is_valid_for_ident(c) => {
-                    // throw away the peeked value
-                    let _ = self.iter.next();
-                    full.push(c);
-                }
-                _ => return full,
-            }
-        }
-    }
-
-    fn read_number(&mut self, first: char, negative: bool) -> Token {
-        assert!(first.is_ascii_digit());
-        let mut digits = String::with_capacity(32);
-        digits.push(first);
-
-        loop {
-            match self.iter.peek() {
-                Some(c) if c.is_ascii_digit() => {
-                    digits.push(*c);
-                }
-                _ => break,
-            }
-        }
-
-        let len = digits.len();
-
-        assert!(len <= u32::MAX as usize);
-
-        let n: i64 = digits.parse().unwrap();
-
-        Token::NumLiteral(if negative { -n } else { n })
-    }
-
-    fn read_string(&mut self) -> Token {
-        let mut output = String::with_capacity(64);
-
-        loop {
-            if let Some(c) = self.iter.next() {
-                match c {
-                    '\\' => match self.iter.next() {
-                        Some(c) => {
-                            if let Some(e) = unescape(c) {
-                                output.push(e);
-                            } else {
-                                return Token::Illegal;
-                            }
-                        }
-                        None => return Token::Illegal,
-                    },
-                    '"' => return Token::StrLiteral(output),
-                    c => {
-                        output.push(c);
-                    }
-                }
-            } else {
-                return Token::Illegal;
-            }
+            consumed: 0,
         }
     }
 }
 
-impl<I: Iterator<Item = char>> Iterator for Lexer<I> {
+impl<'a> Iterator for Lexer<'a> {
     type Item = crate::token::Token;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let Some(c) = self.next_non_whitespace() else {
-            if self.closed {
-                return None;
+        if self.closed {
+            return None;
+        }
+
+        let orig_raw = &self.raw.as_ref()[self.consumed..];
+
+        let (consumed, token) = {
+            let raw = multispace0::<_, nom::error::Error<_>>(orig_raw)
+                .expect("shouldn't fail")
+                .0;
+
+            if raw.is_empty() {
+                self.consumed += orig_raw.len() - raw.len();
+                self.closed = true;
+                return Some(Token::Eof);
             }
 
-            self.closed = true;
-            return Some(Token::Eof);
+            let Ok((raw, token)) = tokenize::<nom::error::Error<_>>(raw) else {
+                panic!("big oof");
+            };
+
+            let consumed = orig_raw.len() - raw.len();
+
+            (consumed, token)
         };
 
-        Some(match c {
-            '>' if self.next_is('=') => Token::GreaterThanOrEqual,
-            '<' if self.next_is('=') => Token::LessThanOrEqual,
-            '>' => Token::GreaterThan,
-            '<' => Token::LessThan,
-            '=' if self.next_is('=') => Token::Equal,
+        self.consumed += consumed;
 
-            '&' if self.next_is('&') => Token::And,
-            '|' if self.next_is('|') => Token::Or,
-            '&' => Token::BitAnd,
-            '|' => Token::BitOr,
-
-            c if c.is_ascii_digit() => self.read_number(c, false),
-
-            '-' if self.next_matches(|c| c.is_ascii_digit()) => {
-                // we're prepending a zero, cause I do be lazy
-                self.read_number('0', true)
-            }
-
-            '+' => Token::Add,
-            '-' => Token::Subtract,
-            '/' => Token::Divide,
-            '*' => Token::Multiply,
-
-            '=' => Token::Assign,
-
-            ',' => Token::Comma,
-            ';' => Token::Semicolon,
-
-            '(' => Token::LParen,
-            ')' => Token::RParen,
-
-            '{' => Token::LSquirly,
-            '}' => Token::RSquirly,
-
-            '"' => self.read_string(),
-
-            c if is_valid_for_ident(c) => {
-                let identifier = self.read_identifier(c);
-
-                match identifier.as_str() {
-                    "fn" => Token::Function,
-                    "let" => Token::Let,
-                    "if" => Token::If,
-                    _ => Token::Ident(identifier),
-                }
-            }
-
-            _ => Token::Illegal,
-        })
+        Some(token)
     }
+}
+
+fn tokenize<'a, E: ParseError<&'a str>>(raw: &'a str) -> IResult<&'a str, Token, E> {
+    let comparisons = alt((
+        value(Token::GreaterThanOrEqual, tag(">=")),
+        value(Token::LessThanOrEqual, tag("<=")),
+        value(Token::Equal, tag("==")),
+        value(Token::GreaterThan, tag(">")),
+        value(Token::LessThan, tag("<")),
+    ));
+
+    let logic = alt((
+        value(Token::And, tag("&&")),
+        value(Token::Or, tag("||")),
+        value(Token::BitAnd, tag("&")),
+        value(Token::BitOr, tag("|")),
+    ));
+
+    let numbers = nom::character::complete::i64.map(Token::NumLiteral);
+    let floats = nom::number::complete::double.map(Token::FloatLiteral);
+
+    let arithmetic = alt((
+        value(Token::Add, tag("+")),
+        value(Token::Subtract, tag("-")),
+        value(Token::Multiply, tag("*")),
+        value(Token::Divide, tag("/")),
+    ));
+
+    let assign = value(Token::Assign, tag("="));
+
+    let parens = alt((
+        value(Token::LParen, tag("(")),
+        value(Token::RParen, tag(")")),
+        value(Token::LSquirly, tag("{")),
+        value(Token::RSquirly, tag("}")),
+    ));
+
+    let punctuation = alt((
+        value(Token::Comma, tag(",")),
+        value(Token::Semicolon, tag(";")),
+    ));
+
+    let ident = identifier.map(|ident| match ident {
+        "fn" => Token::Function,
+        "let" => Token::Let,
+        "if" => Token::If,
+        "else" => Token::Else,
+        i => Token::Ident(i.to_string()),
+    });
+
+    let (raw, token) = alt::<_, _, nom::error::Error<_>, _>((
+        comparisons,
+        logic,
+        numbers,
+        floats,
+        arithmetic,
+        assign,
+        parens,
+        punctuation,
+        ident,
+        string,
+        value(Token::Illegal, take_one),
+    ))(raw)
+    .expect("we're fucked");
+
+    Ok((raw, token))
 }
 
 fn is_valid_for_ident(c: char) -> bool {
     c.is_alphabetic() || c == '_'
 }
 
-fn unescape(c: char) -> Option<char> {
-    match c {
-        '\\' => Some('\\'),
-        'n' => Some('\n'),
-        '"' => Some('"'),
-        _ => None,
+fn string<'a, E: ParseError<&'a str>>(s: &'a str) -> IResult<&'a str, Token, E> {
+    let string_parser = escaped_transform(
+        take_while1(|c| c != '\\' && c != '"'),
+        '\\',
+        alt((
+            value("\\", tag("\\")),
+            value("\"", tag("\"")),
+            value("\n", tag("n")),
+            value("\r", tag("r")),
+            value("\t", tag("t")),
+            value("\0", tag("0")),
+        )),
+    );
+
+    let (s, string) = preceded(tag("\""), cut(terminated(string_parser, tag("\""))))(s)?;
+
+    Ok((s, Token::StrLiteral(string)))
+}
+
+fn identifier<'a, E: ParseError<&'a str>>(s: &'a str) -> IResult<&'a str, &'a str, E> {
+    take_while1(is_valid_for_ident)(s)
+}
+
+fn take_one<'a, E: ParseError<&'a str>>(s: &'a str) -> IResult<&'a str, &'a str, E> {
+    if s.is_empty() {
+        return Err(nom::Err::Error(E::from_error_kind(
+            s,
+            nom::error::ErrorKind::Eof,
+        )));
     }
+
+    Ok((&s[1..], &s[0..1]))
 }
 
 #[cfg(test)]
 mod test {
     use crate::token::Token;
 
-    use super::Lexer;
+    use super::{string, Lexer};
 
     const TEST_VECTOR: &str = r#"
         let a = 5;
@@ -212,8 +185,17 @@ mod test {
         "#;
 
     #[test]
+    fn lex_string() {
+        let s = r#""Amogin\n,--y++++**\\Time""#;
+
+        let (_, parsed) = string::<nom::error::VerboseError<_>>(s).unwrap();
+
+        assert!(matches!(parsed, Token::StrLiteral(_)))
+    }
+
+    #[test]
     fn text_lexing() {
-        let lexer: Vec<Token> = Lexer::new_from_iter(TEST_VECTOR.chars()).collect();
+        let lexer: Vec<Token> = Lexer::new(TEST_VECTOR).collect();
 
         assert_eq!(
             lexer.as_slice(),

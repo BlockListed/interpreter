@@ -1,9 +1,10 @@
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Token {
     Illegal,
     Eof,
     Ident(String),
     NumLiteral(i64),
+    FloatLiteral(f64),
     StrLiteral(String),
 
     GreaterThan,
@@ -23,7 +24,7 @@ pub enum Token {
     Multiply,
 
     Assign,
-    
+
     Comma,
     Semicolon,
 
@@ -36,4 +37,5 @@ pub enum Token {
     Function,
     Let,
     If,
+    Else,
 }
