@@ -8,7 +8,7 @@ use nom::error::ParseError;
 use nom::sequence::{preceded, terminated};
 use nom::{IResult, Parser};
 
-use crate::token::Token;
+use crate::token::{Token, TokenKind};
 
 pub struct Lexer<'a> {
     raw: Cow<'a, str>,
@@ -36,6 +36,8 @@ impl<'a> Iterator for Lexer<'a> {
 
         let orig_raw = &self.raw.as_ref()[self.consumed..];
 
+        let loc = self.consumed;
+
         let (consumed, token) = {
             let raw = multispace0::<_, nom::error::Error<_>>(orig_raw)
                 .expect("shouldn't fail")
@@ -44,7 +46,8 @@ impl<'a> Iterator for Lexer<'a> {
             if raw.is_empty() {
                 self.consumed += orig_raw.len() - raw.len();
                 self.closed = true;
-                return Some(Token::Eof);
+                // Eof token should be at the end of the file.
+                return Some(Token::new(TokenKind::Eof, self.consumed));
             }
 
             let Ok((raw, token)) = tokenize::<nom::error::Error<_>>(raw) else {
@@ -58,56 +61,56 @@ impl<'a> Iterator for Lexer<'a> {
 
         self.consumed += consumed;
 
-        Some(token)
+        Some(Token::new(token, loc))
     }
 }
 
-fn tokenize<'a, E: ParseError<&'a str>>(raw: &'a str) -> IResult<&'a str, Token, E> {
+fn tokenize<'a, E: ParseError<&'a str>>(raw: &'a str) -> IResult<&'a str, TokenKind, E> {
     let comparisons = alt((
-        value(Token::GreaterThanOrEqual, tag(">=")),
-        value(Token::LessThanOrEqual, tag("<=")),
-        value(Token::Equal, tag("==")),
-        value(Token::GreaterThan, tag(">")),
-        value(Token::LessThan, tag("<")),
+        value(TokenKind::GreaterThanOrEqual, tag(">=")),
+        value(TokenKind::LessThanOrEqual, tag("<=")),
+        value(TokenKind::Equal, tag("==")),
+        value(TokenKind::GreaterThan, tag(">")),
+        value(TokenKind::LessThan, tag("<")),
     ));
 
     let logic = alt((
-        value(Token::And, tag("&&")),
-        value(Token::Or, tag("||")),
-        value(Token::BitAnd, tag("&")),
-        value(Token::BitOr, tag("|")),
+        value(TokenKind::And, tag("&&")),
+        value(TokenKind::Or, tag("||")),
+        value(TokenKind::BitAnd, tag("&")),
+        value(TokenKind::BitOr, tag("|")),
     ));
 
-    let numbers = nom::character::complete::i64.map(Token::NumLiteral);
-    let floats = nom::number::complete::double.map(Token::FloatLiteral);
+    let numbers = nom::character::complete::i64.map(TokenKind::NumLiteral);
+    let floats = nom::number::complete::double.map(TokenKind::FloatLiteral);
 
     let arithmetic = alt((
-        value(Token::Add, tag("+")),
-        value(Token::Subtract, tag("-")),
-        value(Token::Multiply, tag("*")),
-        value(Token::Divide, tag("/")),
+        value(TokenKind::Add, tag("+")),
+        value(TokenKind::Subtract, tag("-")),
+        value(TokenKind::Multiply, tag("*")),
+        value(TokenKind::Divide, tag("/")),
     ));
 
-    let assign = value(Token::Assign, tag("="));
+    let assign = value(TokenKind::Assign, tag("="));
 
     let parens = alt((
-        value(Token::LParen, tag("(")),
-        value(Token::RParen, tag(")")),
-        value(Token::LSquirly, tag("{")),
-        value(Token::RSquirly, tag("}")),
+        value(TokenKind::LParen, tag("(")),
+        value(TokenKind::RParen, tag(")")),
+        value(TokenKind::LSquirly, tag("{")),
+        value(TokenKind::RSquirly, tag("}")),
     ));
 
     let punctuation = alt((
-        value(Token::Comma, tag(",")),
-        value(Token::Semicolon, tag(";")),
+        value(TokenKind::Comma, tag(",")),
+        value(TokenKind::Semicolon, tag(";")),
     ));
 
     let ident = identifier.map(|ident| match ident {
-        "fn" => Token::Function,
-        "let" => Token::Let,
-        "if" => Token::If,
-        "else" => Token::Else,
-        i => Token::Ident(i.to_string()),
+        "fn" => TokenKind::Function,
+        "let" => TokenKind::Let,
+        "if" => TokenKind::If,
+        "else" => TokenKind::Else,
+        i => TokenKind::Ident(i.to_string()),
     });
 
     let (raw, token) = alt::<_, _, nom::error::Error<_>, _>((
@@ -121,7 +124,7 @@ fn tokenize<'a, E: ParseError<&'a str>>(raw: &'a str) -> IResult<&'a str, Token,
         punctuation,
         ident,
         string,
-        value(Token::Illegal, take_one),
+        value(TokenKind::Illegal, take_one),
     ))(raw)
     .expect("we're fucked");
 
@@ -132,7 +135,7 @@ fn is_valid_for_ident(c: char) -> bool {
     c.is_alphabetic() || c == '_'
 }
 
-fn string<'a, E: ParseError<&'a str>>(s: &'a str) -> IResult<&'a str, Token, E> {
+fn string<'a, E: ParseError<&'a str>>(s: &'a str) -> IResult<&'a str, TokenKind, E> {
     let string_parser = escaped_transform(
         take_while1(|c| c != '\\' && c != '"'),
         '\\',
@@ -148,7 +151,7 @@ fn string<'a, E: ParseError<&'a str>>(s: &'a str) -> IResult<&'a str, Token, E> 
 
     let (s, string) = preceded(tag("\""), cut(terminated(string_parser, tag("\""))))(s)?;
 
-    Ok((s, Token::StrLiteral(string)))
+    Ok((s, TokenKind::StrLiteral(string)))
 }
 
 fn identifier<'a, E: ParseError<&'a str>>(s: &'a str) -> IResult<&'a str, &'a str, E> {
@@ -168,7 +171,7 @@ fn take_one<'a, E: ParseError<&'a str>>(s: &'a str) -> IResult<&'a str, &'a str,
 
 #[cfg(test)]
 mod test {
-    use crate::token::Token;
+    use crate::token::TokenKind;
 
     use super::{string, Lexer};
 
@@ -190,49 +193,49 @@ mod test {
 
         let (_, parsed) = string::<nom::error::VerboseError<_>>(s).unwrap();
 
-        assert_eq!(parsed, Token::StrLiteral("Amogin\n\",--y++++**\\Time".to_string()));
+        assert_eq!(parsed, TokenKind::StrLiteral("Amogin\n\",--y++++**\\Time".to_string()));
     }
 
     #[test]
     fn text_lexing() {
-        let lexer: Vec<Token> = Lexer::new(TEST_VECTOR).collect();
+        let lexer: Vec<TokenKind> = Lexer::new(TEST_VECTOR).map(|t| t.t).collect();
 
         assert_eq!(
             lexer.as_slice(),
             &[
-                Token::Let,
-                Token::Ident("a".to_string()),
-                Token::Assign,
-                Token::NumLiteral(5),
-                Token::Semicolon,
-                Token::Let,
-                Token::Ident("b".to_string()),
-                Token::Assign,
-                Token::StrLiteral("Hello,\namogus.".to_string()),
-                Token::Semicolon,
-                Token::If,
-                Token::Ident("a".to_string()),
-                Token::GreaterThanOrEqual,
-                Token::NumLiteral(5),
-                Token::LSquirly,
-                Token::Ident("amogus".to_string()),
-                Token::LParen,
-                Token::Ident("b".to_string()),
-                Token::RParen,
-                Token::Semicolon,
-                Token::RSquirly,
-                Token::If,
-                Token::Ident("a".to_string()),
-                Token::Equal,
-                Token::NumLiteral(5),
-                Token::LSquirly,
-                Token::Ident("amogus".to_string()),
-                Token::LParen,
-                Token::Ident("a".to_string()),
-                Token::RParen,
-                Token::Semicolon,
-                Token::RSquirly,
-                Token::Eof
+                TokenKind::Let,
+                TokenKind::Ident("a".to_string()),
+                TokenKind::Assign,
+                TokenKind::NumLiteral(5),
+                TokenKind::Semicolon,
+                TokenKind::Let,
+                TokenKind::Ident("b".to_string()),
+                TokenKind::Assign,
+                TokenKind::StrLiteral("Hello,\namogus.".to_string()),
+                TokenKind::Semicolon,
+                TokenKind::If,
+                TokenKind::Ident("a".to_string()),
+                TokenKind::GreaterThanOrEqual,
+                TokenKind::NumLiteral(5),
+                TokenKind::LSquirly,
+                TokenKind::Ident("amogus".to_string()),
+                TokenKind::LParen,
+                TokenKind::Ident("b".to_string()),
+                TokenKind::RParen,
+                TokenKind::Semicolon,
+                TokenKind::RSquirly,
+                TokenKind::If,
+                TokenKind::Ident("a".to_string()),
+                TokenKind::Equal,
+                TokenKind::NumLiteral(5),
+                TokenKind::LSquirly,
+                TokenKind::Ident("amogus".to_string()),
+                TokenKind::LParen,
+                TokenKind::Ident("a".to_string()),
+                TokenKind::RParen,
+                TokenKind::Semicolon,
+                TokenKind::RSquirly,
+                TokenKind::Eof
             ]
         );
     }

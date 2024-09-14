@@ -1,5 +1,5 @@
 #[derive(Debug, PartialEq, Clone)]
-pub enum Token {
+pub enum TokenKind {
     Illegal,
     Eof,
     Ident(String),
@@ -38,4 +38,19 @@ pub enum Token {
     Let,
     If,
     Else,
+}
+
+pub struct Token {
+    pub t: TokenKind,
+    /// Offset into the source string, where this token begins.
+    pub location: usize,
+}
+
+impl Token {
+    pub fn new(t: TokenKind, loc: usize) -> Self {
+        Token {
+            t,
+            location: loc,
+        }
+    }
 }
