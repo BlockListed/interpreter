@@ -186,11 +186,11 @@ mod test {
 
     #[test]
     fn lex_string() {
-        let s = r#""Amogin\n,--y++++**\\Time""#;
+        let s = r#""Amogin\n\",--y++++**\\Time""#;
 
         let (_, parsed) = string::<nom::error::VerboseError<_>>(s).unwrap();
 
-        assert!(matches!(parsed, Token::StrLiteral(_)))
+        assert_eq!(parsed, Token::StrLiteral("Amogin\n\",--y++++**\\Time".to_string()));
     }
 
     #[test]
