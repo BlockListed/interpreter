@@ -40,17 +40,21 @@ pub enum TokenKind {
     Else,
 }
 
+#[derive(Debug)]
 pub struct Token {
     pub t: TokenKind,
     /// Offset into the source string, where this token begins.
     pub location: usize,
+    /// Length of the token
+    pub length: usize,
 }
 
 impl Token {
-    pub fn new(t: TokenKind, loc: usize) -> Self {
+    pub fn new(t: TokenKind, loc: usize, len: usize) -> Self {
         Token {
             t,
             location: loc,
+            length: len,
         }
     }
 }

@@ -38,16 +38,20 @@ impl<'a> Iterator for Lexer<'a> {
 
         let loc = self.consumed;
 
-        let (consumed, token) = {
+        let (consumed, token_len, token) = {
             let raw = multispace0::<_, nom::error::Error<_>>(orig_raw)
                 .expect("shouldn't fail")
                 .0;
 
+            let whitespace_len = orig_raw.len() - raw.len();
+
             if raw.is_empty() {
-                self.consumed += orig_raw.len() - raw.len();
+                self.consumed += whitespace_len;
                 self.closed = true;
+
+                assert_eq!(self.consumed, self.raw.len());
                 // Eof token should be at the end of the file.
-                return Some(Token::new(TokenKind::Eof, self.consumed));
+                return Some(Token::new(TokenKind::Eof, self.consumed, 0));
             }
 
             let Ok((raw, token)) = tokenize::<nom::error::Error<_>>(raw) else {
@@ -56,12 +60,12 @@ impl<'a> Iterator for Lexer<'a> {
 
             let consumed = orig_raw.len() - raw.len();
 
-            (consumed, token)
+            (consumed, consumed - whitespace_len, token)
         };
 
         self.consumed += consumed;
 
-        Some(Token::new(token, loc))
+        Some(Token::new(token, loc, token_len))
     }
 }
 
@@ -171,7 +175,7 @@ fn take_one<'a, E: ParseError<&'a str>>(s: &'a str) -> IResult<&'a str, &'a str,
 
 #[cfg(test)]
 mod test {
-    use crate::token::TokenKind;
+    use crate::token::{Token, TokenKind};
 
     use super::{string, Lexer};
 
@@ -198,10 +202,14 @@ mod test {
 
     #[test]
     fn text_lexing() {
-        let lexer: Vec<TokenKind> = Lexer::new(TEST_VECTOR).map(|t| t.t).collect();
+        let lexed: Vec<Token> = Lexer::new(TEST_VECTOR).collect();
+
+        println!("{:#?}", lexed);
+
+        let tokens: Vec<TokenKind> = lexed.iter().map(|t| &t.t).cloned().collect();
 
         assert_eq!(
-            lexer.as_slice(),
+            tokens.as_slice(),
             &[
                 TokenKind::Let,
                 TokenKind::Ident("a".to_string()),
